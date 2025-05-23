@@ -1,3 +1,5 @@
+-- It can always be very interesting to see how your joins work - what you believe is a perfect one-to-one join might just be a one-to-many or many-to-many join. Get some peace of mind, check your joins before implementing them.
+
 WITH FilteredCharges AS (
   SELECT
     payment_intent_id,
