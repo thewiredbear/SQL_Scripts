@@ -10,7 +10,6 @@ WITH latest_charge_cte AS (
     c.amount AS charge_amount,
     c.description AS charge_description,
     c.failure_message,
-    c.refunded,
     c.outcome_seller_message,
     c.status AS charge_status,
     c.created AS charge_created,
@@ -34,15 +33,30 @@ latest_refund_cte AS (
   FROM `stripe_v2.refund` r
   WHERE r.created >= TIMESTAMP('2024-09-01 00:00:00 UTC')
 ),
-charge_balance_refund_cte AS (
-  -- Join latest charges with balance transactions and latest refunds
+latest_dispute_cte AS (
+  -- Select the latest dispute per charge
+  SELECT
+    d.id AS dispute_id,
+    d.charge_id,
+    d.amount AS dispute_amount,
+    d.created AS dispute_created,
+    d.status AS dispute_status,
+    d.reason AS dispute_reason,
+    d.evidence_details_due_by AS dispute_evidence_due_by,
+    d.is_charge_refundable AS dispute_is_charge_refundable,
+    d.balance_transaction AS dispute_balance_transaction_id,
+    ROW_NUMBER() OVER (PARTITION BY d.charge_id ORDER BY d.created DESC) AS rn
+  FROM `stripe_v2.dispute` d
+  WHERE d.created >= TIMESTAMP('2024-09-01 00:00:00 UTC')
+),
+charge_balance_refund_dispute_cte AS (
+  -- Join latest charges with balance transactions, refunds, and disputes
   SELECT
     lc.charge_id,
     lc.payment_intent_id,
     lc.charge_amount,
     lc.charge_description,
     lc.failure_message,
-    lc.refunded,
     lc.outcome_seller_message,
     lc.charge_status,
     bt.id AS balance_transaction_id,
@@ -61,7 +75,15 @@ charge_balance_refund_cte AS (
     lr.refund_status,
     lr.refund_reason,
     lr.refund_description,
-    lr.refund_balance_transaction_id
+    lr.refund_balance_transaction_id,
+    ld.dispute_id,
+    ld.dispute_amount,
+    ld.dispute_created,
+    ld.dispute_status,
+    ld.dispute_reason,
+    ld.dispute_evidence_due_by,
+    ld.dispute_is_charge_refundable,
+    ld.dispute_balance_transaction_id
   FROM latest_charge_cte lc
   LEFT JOIN `stripe_v2.balance_transaction` bt
     ON lc.charge_id = bt.source
@@ -70,17 +92,19 @@ charge_balance_refund_cte AS (
   LEFT JOIN latest_refund_cte lr
     ON lc.charge_id = lr.charge_id
     AND lr.rn = 1
+  LEFT JOIN latest_dispute_cte ld
+    ON lc.charge_id = ld.charge_id
+    AND ld.rn = 1
   WHERE lc.rn = 1
 ),
 pivoted_balance_cte AS (
-  -- Pivot balance transactions to capture all fields for payment and payment_failure_refund
+  -- Pivot balance transactions and include refund and dispute fields
   SELECT
     charge_id,
     payment_intent_id,
     charge_amount,
     charge_description,
     failure_message,
-    refunded,
     outcome_seller_message,
     charge_status,
     -- Fields for type = 'payment'
@@ -110,15 +134,23 @@ pivoted_balance_cte AS (
     MAX(refund_status) AS refund_status,
     MAX(refund_reason) AS refund_reason,
     MAX(refund_description) AS refund_description,
-    MAX(refund_balance_transaction_id) AS refund_balance_transaction_id
-  FROM charge_balance_refund_cte
+    MAX(refund_balance_transaction_id) AS refund_balance_transaction_id,
+    -- Dispute fields
+    MAX(dispute_id) AS dispute_id,
+    MAX(dispute_amount) AS dispute_amount,
+    MAX(dispute_created) AS dispute_created,
+    MAX(dispute_status) AS dispute_status,
+    MAX(dispute_reason) AS dispute_reason,
+    MAX(dispute_evidence_due_by) AS dispute_evidence_due_by,
+    MAX(dispute_is_charge_refundable) AS dispute_is_charge_refundable,
+    MAX(dispute_balance_transaction_id) AS dispute_balance_transaction_id
+  FROM charge_balance_refund_dispute_cte
   GROUP BY
     charge_id,
     payment_intent_id,
     charge_amount,
     charge_description,
     failure_message,
-    refunded,
     outcome_seller_message,
     charge_status
 )
@@ -131,7 +163,6 @@ SELECT
   pbc.charge_amount,
   pbc.charge_description,
   pbc.failure_message,
-  pbc.refunded,
   pbc.outcome_seller_message,
   pbc.charge_status,
   pbc.payment_id AS balance_transaction_id,
@@ -158,7 +189,15 @@ SELECT
   pbc.refund_status,
   pbc.refund_reason,
   pbc.refund_description,
-  pbc.refund_balance_transaction_id
+  pbc.refund_balance_transaction_id,
+  pbc.dispute_id,
+  pbc.dispute_amount,
+  pbc.dispute_created,
+  pbc.dispute_status,
+  pbc.dispute_reason,
+  pbc.dispute_evidence_due_by,
+  pbc.dispute_is_charge_refundable,
+  pbc.dispute_balance_transaction_id
 FROM `stripe_v2.payment_intent` pi
 LEFT JOIN pivoted_balance_cte pbc
   ON pi.id = pbc.payment_intent_id
