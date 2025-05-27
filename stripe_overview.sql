@@ -1,5 +1,7 @@
 --developing a stripe overview from replicated stripe database in bigqyuery
 
+-- we have to use MAX() because still we will have multiple balance transaction for charges and have to manage them accordingly.
+
 WITH latest_charge_cte AS (
   -- Select the latest charge per payment intent
   SELECT
